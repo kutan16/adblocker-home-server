@@ -1,0 +1,225 @@
+networks:
+  private_network:
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.2.0.0/24
+          gateway: 10.2.0.1
+
+services:
+
+  unbound:
+    image: mvance/unbound-rpi:latest
+    container_name: unbound
+    restart: unless-stopped
+    hostname: unbound
+    volumes:
+      - ./unbound:/opt/unbound/etc/unbound/
+    networks:
+      private_network:
+        ipv4_address: 10.2.0.3
+    cap_add:
+      - NET_ADMIN
+    env_file: .env
+
+  wireguard:
+    depends_on:
+      - unbound
+      - pihole
+    image: linuxserver/wireguard
+    container_name: wireguard
+    ports:
+      - 5000:5000
+      - 51820:51820/udp
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    volumes:
+      - ./config:/config
+    env_file: .env
+
+  wireguard-ui:
+    image: ngoduykhanh/wireguard-ui:latest
+    container_name: wireguard-ui
+    depends_on:
+      - wireguard
+    cap_add:
+      - NET_ADMIN
+    network_mode: service:wireguard
+    logging:
+      driver: json-file
+      options:
+        max-size: 50m
+    volumes:
+      - ./db:/app/db
+      - ./config:/config
+    env_file: .env
+
+  pihole:
+    depends_on:
+      - unbound
+    container_name: pihole
+    image: pihole/pihole:latest
+    restart: unless-stopped
+    hostname: pihole
+    ports:
+      - 53:53/tcp
+      - 53:53/udp
+      - 8017:80/tcp
+    dns:
+      - 127.0.0.1
+      - ${PIHOLE_DNS}
+    volumes:
+      - ./etc-pihole/:/etc/pihole/
+      - ./etc-dnsmasq.d/:/etc/dnsmasq.d/
+    cap_add:
+      - NET_ADMIN
+    networks:
+      private_network:
+        ipv4_address: 10.2.0.2
+    env_file: ./.env
+
+  reverse-proxy:
+    depends_on:
+      - pihole
+    image: jc21/nginx-proxy-manager:latest
+    container_name: nginx
+    ports:
+        - 80:80
+        - 81:81
+        - 443:443
+    volumes:
+        - ./data:/data
+        - ./letsencrypt:/etc/letsencrypt
+    networks:
+      private_network:
+        ipv4_address: 10.2.0.4
+    restart: unless-stopped
+
+  qbittorrent:
+    depends_on:
+      - pihole
+      - wireguard
+    container_name: qbittorrent
+    dns:
+      - ${PIHOLE_IPV4_ADDRESS}
+      - 8.8.8.8
+#    network_mode: service:wireguard
+    restart: unless-stopped
+    environment:
+      - PGID=1000
+      - PUID=1000
+      - QBT_EULA=accept
+      - QBT_VERSION=latest
+      - QBT_WEBUI_PORT=7070
+      - TZ=Asia/Kolkata
+    image: qbittorrentofficial/qbittorrent-nox:latest
+    ports:
+      - 6881:6881/tcp
+      - 6881:6881/udp
+      - 7070:7070/tcp
+    read_only: true
+    stop_grace_period: 30m
+    tmpfs:
+      - /tmp
+    tty: true
+    volumes:
+      - ./config:/config
+      - /media/kutan16/exthdd/torrent-downloads:/downloads
+      - /media/kutan16/exthdd/movies:/downloads/movies
+      - /media/kutan16/exthdd/anime:/downloads/anime
+      - /media/kutan16/exthdd/tv-shows:/downloads/tv
+    networks:
+      private_network:
+        ipv4_address: 10.2.0.5
+
+  jackett:
+    depends_on:
+      - pihole
+    image: lscr.io/linuxserver/jackett:latest
+    container_name: jackett
+    dns:
+      - ${PIHOLE_IPV4_ADDRESS}
+      - 8.8.8.8
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Kolkata
+      - AUTO_UPDATE=true #optional
+      - RUN_OPTS= #optional
+    volumes:
+      - /home/kutan16/jackett/config:/config
+      - /home/kutan16/jackett/downloads:/downloads
+    ports:
+      - 9117:9117
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 10.2.0.6
+
+  sonarr:
+    depends_on:
+      - pihole
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    dns:
+      - ${PIHOLE_IPV4_ADDRESS}
+      - 8.8.8.8
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Kolkata
+    volumes:
+      - /home/kutan16/sonarr/data:/config
+      - /media/kutan16/exthdd/tv-shows:/tv #optional
+      - /media/kutan16/exthdd/anime:/anime
+      - /media/kutan16/exthdd/torrent-downloads:/downloads #optional
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 10.2.0.7
+
+  jellyfin:
+    depends_on:
+      - pihole
+    dns:
+      - ${PIHOLE_IPV4_ADDRESS}
+      - 8.8.8.8
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Kolkata
+#      - JELLYFIN_PublishedServerUrl=192.168.0.5 #optional
+    volumes:
+      - /home/kutan16/jellyfin/config:/config
+      - /media/kutan16/exthdd/tv-shows:/data/tvshows
+      - /media/kutan16/exthdd/movies:/data/movies
+      - /media/kutan16/exthdd/anime:/data/anime
+    ports:
+      - 8096:8096
+      - 8920:8920 #optional
+      - 7359:7359/udp #optional
+      - 1900:1900/udp #optional
+    restart: unless-stopped
+    networks:
+      private_network:
+        ipv4_address: 10.2.0.8
+
+  bazarr:
+    depends_on:
+      - pihole
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    dns:
+      - ${PIHOLE_IPV4_ADDRESS}
+      - 8.8.8.8
+    environment:
+      - PUID=1000
+      - PGID=1000
